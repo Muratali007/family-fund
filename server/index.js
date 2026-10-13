@@ -8,7 +8,8 @@ const db = require('./db');
 
 const PORT = process.env.PORT || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
-const JWT_SECRET = process.env.JWT_SECRET || 'dev-secret-change-me';
+// Без JWT_SECRET (локально) — случайный ключ на каждый запуск; в репозитории секретов нет
+const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
 if (IS_PROD && !process.env.JWT_SECRET) {
   console.error('JWT_SECRET не задан — задайте переменную окружения в продакшене');
   process.exit(1);
