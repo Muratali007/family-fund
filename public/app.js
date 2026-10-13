@@ -130,6 +130,59 @@ async function withBusy(btn, fn) {
   }
 }
 
+// ---------- установка как приложение (PWA) ----------
+let installPrompt = null;
+const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const canOfferInstall = () => !isStandalone() && (installPrompt || isIOS());
+const store = {
+  get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
+  set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
+};
+
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}
+window.addEventListener('beforeinstallprompt', (e) => {
+  e.preventDefault();
+  installPrompt = e;
+  document.querySelectorAll('[data-install-slot]').forEach((el) => (el.innerHTML = installBox(el.dataset.installSlot)));
+  bindInstall();
+});
+window.addEventListener('appinstalled', () => {
+  installPrompt = null;
+  document.querySelectorAll('[data-install-slot]').forEach((el) => (el.innerHTML = ''));
+  toast('Приложение установлено 🎉');
+});
+
+function installBox(where) {
+  if (!canOfferInstall()) return '';
+  if (where === 'home' && store.get('installDismissed')) return '';
+  const body = installPrompt
+    ? '<button class="btn btn-primary btn-sm" data-install>📲 Установить</button>'
+    : '<div class="small">Нажмите <b>«Поделиться»</b> <span class="ios-share">⬆︎</span> внизу Safari → <b>«На экран „Домой“»</b> → <b>«Добавить»</b>.</div>';
+  return `<div class="install-card">
+    <img src="/icons/icon-192.png" alt="" width="44" height="44">
+    <div class="grow"><b>Установить как приложение</b>
+      <div class="muted small">Иконка на главном экране, открывается без браузера</div>
+      <div style="margin-top:8px">${body}</div></div>
+    ${where === 'home' ? '<button class="icon-btn" data-install-close title="Скрыть">✕</button>' : ''}
+  </div>`;
+}
+
+function bindInstall() {
+  document.querySelectorAll('[data-install]').forEach((b) => (b.onclick = async () => {
+    if (!installPrompt) return;
+    installPrompt.prompt();
+    await installPrompt.userChoice;
+    installPrompt = null;
+  }));
+  document.querySelectorAll('[data-install-close]').forEach((b) => (b.onclick = () => {
+    store.set('installDismissed', '1');
+    b.closest('[data-install-slot]').innerHTML = '';
+  }));
+}
+
 // ---------- router ----------
 async function loadMe() {
   try {
@@ -340,6 +393,7 @@ async function renderHome() {
       </div>
       <a class="stack" href="#/family" title="Семья">${state.members.slice(0, 6).map((m) => avatar(m)).join('')}</a>
     </div>
+    <div data-install-slot="home">${installBox('home')}</div>
     ${state.members.length < 2 ? `<div class="note" style="margin-bottom:16px">Вы пока один в семье. <a href="#/family">Пригласите родных</a> — без них голосование не начнётся.</div>` : ''}
     <div class="tabs">${tabs.map((t) => `<button class="tab ${t === state.tab ? 'active' : ''}" data-tab="${t}">${STATUS[t].icon} ${STATUS[t].label}<span class="count">${counts[t]}</span></button>`).join('')}</div>
     ${list.length ? `<div class="grid">${list.map(itemCard).join('')}</div>` : `
@@ -348,6 +402,7 @@ async function renderHome() {
     <button class="fab" onclick="location.hash='#/new'"><span style="font-size:22px">＋</span> Хочу вещь</button>`);
 
   document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; renderHome(); }));
+  bindInstall();
 }
 
 function itemCard(i) {
@@ -701,6 +756,7 @@ async function renderFamily() {
           <button class="btn btn-primary btn-block">Сохранить</button>
           <button type="button" class="btn btn-ghost btn-block" id="logout" style="margin-top:10px">Выйти</button>
         </form>
+        <div class="section" data-install-slot="profile">${installBox('profile')}</div>
       </div>
     </div>`);
 
@@ -732,6 +788,7 @@ async function renderFamily() {
       renderFamily();
     });
   };
+  bindInstall();
   document.getElementById('logout').onclick = async () => {
     await api('/logout', { method: 'POST' });
     state.me = null;
