@@ -98,6 +98,18 @@ function readReceipt(file) {
   return resizeImage(file, 1600, 0.85);
 }
 
+// Публичной ссылки «перевод на номер» у Kaspi нет — открываем само приложение.
+// Android: запуск по имени пакета, без приложения — Google Play. iPhone: App Store с кнопкой «Открыть».
+const KASPI_PLAY = 'https://play.google.com/store/apps/details?id=kz.kaspi.mobile';
+function kaspiAppLink() {
+  if (/android/i.test(navigator.userAgent)) {
+    return 'intent:#Intent;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;package=kz.kaspi.mobile;' +
+      `S.browser_fallback_url=${encodeURIComponent(KASPI_PLAY)};end`;
+  }
+  if (isIOS()) return 'https://apps.apple.com/kz/app/id1195076505';
+  return null;
+}
+
 const itemUrl = (id) => `${location.origin}/#/item/${id}`;
 
 // Готовый текст для семейной группы в WhatsApp
@@ -634,8 +646,11 @@ async function renderItem(id) {
         <div class="kaspi-logo">K</div>
         <div class="grow"><div class="muted small">Перевод на Kaspi${i.kaspiName ? ' · ' + esc(i.kaspiName) : ''}</div>
           <div class="kaspi-phone">${esc(i.kaspiPhone || 'номер не указан')}</div></div>
-        ${i.kaspiPhone ? '<button type="button" class="btn btn-sm" id="copyKaspi">Копировать</button>' : ''}
-      </div>`;
+        ${i.kaspiPhone ? '<button type="button" class="btn btn-sm btn-ghost" id="copyKaspi">Копировать</button>' : ''}
+      </div>
+      ${i.kaspiPhone ? `<button type="button" class="btn btn-kaspi btn-block" id="openKaspi" style="margin-top:10px">
+        <span class="kaspi-logo sm">K</span> Перевести в Kaspi</button>
+        <p class="muted small" style="margin:6px 0 0">Номер скопируется и откроется Kaspi: <b>Переводы → Клиенту Kaspi → По номеру телефона</b> → вставьте номер.</p>` : ''}`;
     if (i.available <= 0) {
       action = `${kaspi}<div class="note" style="margin-top:12px">Вся оставшаяся сумма уже отправлена и ждёт подтверждения ${esc(author?.name || 'автора')}.</div>`;
     } else {
@@ -737,15 +752,24 @@ async function renderItem(id) {
     renderItem(id);
   })));
 
+  const copyPhone = async () => {
+    try {
+      await navigator.clipboard.writeText(i.kaspiPhone.replace(/[^\d+]/g, ''));
+      return true;
+    } catch {
+      return false;
+    }
+  };
   const copy = document.getElementById('copyKaspi');
-  if (copy) {
-    copy.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(i.kaspiPhone.replace(/[^\d+]/g, ''));
-        toast('Номер скопирован: ' + i.kaspiPhone);
-      } catch {
-        toast(i.kaspiPhone);
-      }
+  if (copy) copy.onclick = async () => toast((await copyPhone()) ? 'Номер скопирован: ' + i.kaspiPhone : i.kaspiPhone);
+  const open = document.getElementById('openKaspi');
+  if (open) {
+    open.onclick = async () => {
+      const copied = await copyPhone();
+      const link = kaspiAppLink();
+      if (!link) return toast(`${copied ? 'Номер скопирован. ' : ''}Откройте Kaspi на телефоне: Переводы → Клиенту Kaspi → ${i.kaspiPhone}`);
+      toast(copied ? 'Номер скопирован — открываем Kaspi…' : 'Открываем Kaspi… Номер: ' + i.kaspiPhone);
+      setTimeout(() => (location.href = link), 500);
     };
   }
 
