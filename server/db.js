@@ -1,0 +1,115 @@
+// Тонкая обёртка над БД: Postgres, если задан DATABASE_URL, иначе встроенный SQLite (для локальной разработки).
+// Во всех запросах используем плейсхолдеры "?" — для Postgres они превращаются в $1, $2, ...
+const path = require('path');
+const fs = require('fs');
+
+const usePg = !!process.env.DATABASE_URL;
+
+const SCHEMA = (pg) => {
+  const id = pg ? 'SERIAL PRIMARY KEY' : 'INTEGER PRIMARY KEY AUTOINCREMENT';
+  const ts = pg ? 'TIMESTAMPTZ NOT NULL DEFAULT NOW()' : "TEXT NOT NULL DEFAULT (datetime('now'))";
+  const money = pg ? 'BIGINT' : 'INTEGER';
+  return [
+    `CREATE TABLE IF NOT EXISTS families (
+      id ${id},
+      name TEXT NOT NULL,
+      invite_code TEXT NOT NULL UNIQUE,
+      created_at ${ts}
+    )`,
+    `CREATE TABLE IF NOT EXISTS users (
+      id ${id},
+      family_id INTEGER NOT NULL REFERENCES families(id),
+      name TEXT NOT NULL,
+      email TEXT NOT NULL UNIQUE,
+      password_hash TEXT NOT NULL,
+      role TEXT NOT NULL,
+      relation_to INTEGER REFERENCES users(id),
+      avatar TEXT,
+      created_at ${ts}
+    )`,
+    `CREATE TABLE IF NOT EXISTS items (
+      id ${id},
+      family_id INTEGER NOT NULL REFERENCES families(id),
+      creator_id INTEGER NOT NULL REFERENCES users(id),
+      title TEXT NOT NULL,
+      description TEXT,
+      photo TEXT,
+      price ${money} NOT NULL,
+      own_amount ${money} NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'voting',
+      created_at ${ts}
+    )`,
+    `CREATE TABLE IF NOT EXISTS votes (
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      approve INTEGER NOT NULL,
+      created_at ${ts},
+      PRIMARY KEY (item_id, user_id)
+    )`,
+    `CREATE TABLE IF NOT EXISTS contributions (
+      id ${id},
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      amount ${money} NOT NULL,
+      comment TEXT,
+      created_at ${ts}
+    )`,
+  ];
+};
+
+let impl;
+
+if (usePg) {
+  const { Pool } = require('pg');
+  // BIGINT/COUNT приходят строками — приводим к числу
+  require('pg').types.setTypeParser(20, (v) => Number(v));
+  const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
+  });
+  const toPg = (sql) => {
+    let i = 0;
+    return sql.replace(/\?/g, () => `$${++i}`);
+  };
+  impl = {
+    async init() {
+      for (const s of SCHEMA(true)) await pool.query(s);
+    },
+    async all(sql, params = []) {
+      return (await pool.query(toPg(sql), params)).rows;
+    },
+    async get(sql, params = []) {
+      return (await pool.query(toPg(sql), params)).rows[0];
+    },
+    async run(sql, params = []) {
+      const r = await pool.query(toPg(sql), params);
+      return { rows: r.rows, changes: r.rowCount };
+    },
+  };
+} else {
+  const { DatabaseSync } = require('node:sqlite');
+  const dir = path.join(__dirname, '..', 'data');
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new DatabaseSync(path.join(dir, 'app.db'));
+  db.exec('PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;');
+  impl = {
+    async init() {
+      for (const s of SCHEMA(false)) db.exec(s);
+    },
+    async all(sql, params = []) {
+      return db.prepare(sql).all(...params);
+    },
+    async get(sql, params = []) {
+      return db.prepare(sql).get(...params);
+    },
+    async run(sql, params = []) {
+      const st = db.prepare(sql);
+      if (/returning/i.test(sql)) return { rows: st.all(...params), changes: 1 };
+      const r = st.run(...params);
+      return { rows: [], changes: Number(r.changes) };
+    },
+  };
+}
+
+impl.kind = usePg ? 'postgres' : 'sqlite';
+module.exports = impl;
