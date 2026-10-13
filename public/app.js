@@ -8,6 +8,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const money = (n) => Number(n || 0).toLocaleString('ru-RU') + ' ₸';
 const pct = (a, b) => (b > 0 ? Math.min(100, Math.round((a / b) * 100)) : 0);
 const member = (id) => state.members.find((m) => m.id === id);
+// версия из ?v= в адресе этого скрипта; сервер шлёт свою в X-App-Version
+const APP_VERSION = new URL(document.currentScript.src).searchParams.get('v');
 const COLORS = ['#0f766e', '#d97706', '#7c3aed', '#db2777', '#2563eb', '#059669', '#dc2626', '#4f46e5'];
 
 async function api(path, opts = {}) {
@@ -17,6 +19,12 @@ async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
     credentials: 'same-origin',
   });
+  const serverVersion = res.headers.get('X-App-Version');
+  // сайт обновился, пока страница была открыта — перезагружаемся (только на чтении, чтобы не потерять отправку)
+  if (APP_VERSION && serverVersion && serverVersion !== APP_VERSION && !opts.method) {
+    location.reload();
+    return new Promise(() => {});
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.error || 'Ошибка сети');

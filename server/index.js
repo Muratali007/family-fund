@@ -28,6 +28,18 @@ app.set('trust proxy', 1);
 app.use(express.json({ limit: '7mb' }));
 app.use(cookieParser());
 
+// index.html со ссылками вида /app.js?v=<версия>, чтобы после деплоя браузеры сразу брали новые файлы
+const VERSION = (process.env.RENDER_GIT_COMMIT || Date.now().toString(36)).slice(0, 12);
+const INDEX_HTML = require('fs')
+  .readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8')
+  .replace(/(href="\/styles\.css|src="\/app\.js)"/g, `$1?v=${VERSION}"`);
+const sendIndex = (req, res) => res.set('Cache-Control', 'no-cache').type('html').send(INDEX_HTML);
+
+app.use('/api', (req, res, next) => {
+  res.set('X-App-Version', VERSION);
+  next();
+});
+
 // ---------- helpers ----------
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
@@ -553,8 +565,9 @@ app.delete('/api/items/:id', auth, wrap(async (req, res) => {
 
 // ---------- static & errors ----------
 app.get('/healthz', (req, res) => res.send('ok'));
-app.use(express.static(path.join(__dirname, '..', 'public')));
-app.get(/^\/(?!api\/).*/, (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+app.get('/', sendIndex);
+app.use(express.static(path.join(__dirname, '..', 'public'), { index: false }));
+app.get(/^\/(?!api\/).*/, sendIndex);
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Не найдено' }));
 // eslint-disable-next-line no-unused-vars
