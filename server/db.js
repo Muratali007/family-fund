@@ -3,6 +3,12 @@
 const path = require('path');
 const fs = require('fs');
 
+// Переменные от `neon env pull` (.env.local) или .env — если файлы есть; на хостинге берутся из окружения
+for (const f of ['.env.local', '.env']) {
+  const p = path.join(__dirname, '..', f);
+  if (fs.existsSync(p)) process.loadEnvFile(p);
+}
+
 const usePg = !!process.env.DATABASE_URL;
 
 const SCHEMA = (pg) => {
@@ -73,7 +79,18 @@ if (usePg) {
   };
   impl = {
     async init() {
-      for (const s of SCHEMA(true)) await pool.query(s);
+      // DDL — через прямое подключение (без -pooler), запросы приложения — через пул
+      const { Client } = require('pg');
+      const direct = new Client({
+        connectionString: process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL,
+        ssl: process.env.PGSSL === 'disable' ? false : { rejectUnauthorized: false },
+      });
+      await direct.connect();
+      try {
+        for (const s of SCHEMA(true)) await direct.query(s);
+      } finally {
+        await direct.end();
+      }
     },
     async all(sql, params = []) {
       return (await pool.query(toPg(sql), params)).rows;
