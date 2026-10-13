@@ -183,6 +183,111 @@ function bindInstall() {
   }));
 }
 
+// ---------- push-уведомления ----------
+const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+// на iPhone push работает только в приложении, установленном на экран «Домой»
+const pushNeedsInstall = () => isIOS() && !isStandalone();
+
+function b64ToBytes(b64) {
+  const s = atob((b64 + '='.repeat((4 - (b64.length % 4)) % 4)).replace(/-/g, '+').replace(/_/g, '/'));
+  return Uint8Array.from(s, (c) => c.charCodeAt(0));
+}
+
+async function currentSub() {
+  if (!pushSupported()) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+
+async function enablePush() {
+  const perm = await Notification.requestPermission();
+  if (perm !== 'granted') {
+    throw new Error(perm === 'denied'
+      ? 'Уведомления запрещены в настройках браузера — разрешите их для этого сайта'
+      : 'Разрешение не выдано');
+  }
+  const { key } = await api('/push/key');
+  const reg = await navigator.serviceWorker.ready;
+  const sub = (await reg.pushManager.getSubscription()) ||
+    (await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(key) }));
+  await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+}
+
+async function disablePush() {
+  const sub = await currentSub();
+  if (!sub) return;
+  await api('/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } });
+  await sub.unsubscribe();
+}
+
+// Привязываем подписку этого устройства к текущему аккаунту (после входа под другим пользователем)
+let pushSynced = false;
+async function syncPush() {
+  if (pushSynced || !pushSupported() || Notification.permission !== 'granted') return;
+  pushSynced = true;
+  try {
+    const sub = await currentSub();
+    if (sub) await api('/push/subscribe', { method: 'POST', body: { subscription: sub.toJSON() } });
+  } catch {}
+}
+
+async function pushBox(where) {
+  if (pushNeedsInstall()) {
+    return where === 'profile'
+      ? `<div class="install-card"><div class="push-ico">🔔</div><div class="grow"><b>Уведомления на телефон</b>
+          <div class="muted small">На iPhone уведомления работают только в установленном приложении: установите его (см. выше) и откройте с экрана «Домой».</div></div></div>`
+      : '';
+  }
+  if (!pushSupported()) {
+    return where === 'profile'
+      ? '<div class="install-card"><div class="push-ico">🔕</div><div class="grow"><b>Уведомления на телефон</b><div class="muted small">Этот браузер не поддерживает уведомления. Откройте сайт в Chrome или установите приложение.</div></div></div>'
+      : '';
+  }
+  const sub = await currentSub().catch(() => null);
+  const on = !!sub && Notification.permission === 'granted';
+  if (where === 'home' && (on || Notification.permission === 'denied' || store.get('pushDismissed'))) return '';
+  if (where === 'home') {
+    return `<div class="install-card"><div class="push-ico">🔔</div>
+      <div class="grow"><b>Включите уведомления</b>
+        <div class="muted small">Узнавайте сразу о новых вещах, голосах и переводах</div>
+        <div style="margin-top:8px"><button class="btn btn-primary btn-sm" data-push-on>Включить</button></div></div>
+      <button class="icon-btn" data-push-close title="Скрыть">✕</button></div>`;
+  }
+  return `<div class="install-card"><div class="push-ico">${on ? '🔔' : '🔕'}</div>
+    <div class="grow"><b>Уведомления на телефон: ${on ? 'включены' : 'выключены'}</b>
+      <div class="muted small">${Notification.permission === 'denied'
+        ? 'Запрещены в настройках браузера. Разрешите уведомления для этого сайта и обновите страницу.'
+        : 'Новые вещи, голоса, начало сбора, переводы и их проверка.'}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap">${on
+        ? '<button class="btn btn-ghost btn-sm" data-push-test>Проверить</button><button class="btn btn-ghost btn-sm" data-push-off>Выключить</button>'
+        : Notification.permission === 'denied' ? '' : '<button class="btn btn-primary btn-sm" data-push-on>Включить</button>'}</div>
+    </div></div>`;
+}
+
+async function fillPush() {
+  for (const el of document.querySelectorAll('[data-push-slot]')) {
+    el.innerHTML = await pushBox(el.dataset.pushSlot);
+  }
+  document.querySelectorAll('[data-push-on]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
+    await enablePush();
+    toast('Уведомления включены 🔔');
+    fillPush();
+  })));
+  document.querySelectorAll('[data-push-off]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
+    await disablePush();
+    toast('Уведомления выключены');
+    fillPush();
+  })));
+  document.querySelectorAll('[data-push-test]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
+    const r = await api('/push/test', { method: 'POST' });
+    toast(r.sent ? 'Отправлено — уведомление придёт через пару секунд' : 'Не удалось доставить — выключите и включите уведомления снова', !r.sent);
+  })));
+  document.querySelectorAll('[data-push-close]').forEach((b) => (b.onclick = () => {
+    store.set('pushDismissed', '1');
+    b.closest('[data-push-slot]').innerHTML = '';
+  }));
+}
+
 // ---------- router ----------
 async function loadMe() {
   try {
@@ -191,6 +296,7 @@ async function loadMe() {
     state.family = d.family;
     state.members = d.members;
     state.mailEnabled = d.mailEnabled;
+    syncPush();
     return true;
   } catch {
     state.me = null;
@@ -394,6 +500,7 @@ async function renderHome() {
       <a class="stack" href="#/family" title="Семья">${state.members.slice(0, 6).map((m) => avatar(m)).join('')}</a>
     </div>
     <div data-install-slot="home">${installBox('home')}</div>
+    <div data-push-slot="home"></div>
     ${state.members.length < 2 ? `<div class="note" style="margin-bottom:16px">Вы пока один в семье. <a href="#/family">Пригласите родных</a> — без них голосование не начнётся.</div>` : ''}
     <div class="tabs">${tabs.map((t) => `<button class="tab ${t === state.tab ? 'active' : ''}" data-tab="${t}">${STATUS[t].icon} ${STATUS[t].label}<span class="count">${counts[t]}</span></button>`).join('')}</div>
     ${list.length ? `<div class="grid">${list.map(itemCard).join('')}</div>` : `
@@ -403,6 +510,7 @@ async function renderHome() {
 
   document.querySelectorAll('[data-tab]').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; renderHome(); }));
   bindInstall();
+  fillPush();
 }
 
 function itemCard(i) {
@@ -757,6 +865,7 @@ async function renderFamily() {
           <button type="button" class="btn btn-ghost btn-block" id="logout" style="margin-top:10px">Выйти</button>
         </form>
         <div class="section" data-install-slot="profile">${installBox('profile')}</div>
+        <div class="section" data-push-slot="profile"></div>
       </div>
     </div>`);
 
@@ -789,7 +898,14 @@ async function renderFamily() {
     });
   };
   bindInstall();
+  fillPush();
   document.getElementById('logout').onclick = async () => {
+    // отвязываем это устройство от аккаунта, чтобы чужие уведомления сюда не приходили
+    try {
+      const sub = await currentSub();
+      if (sub) await api('/push/unsubscribe', { method: 'POST', body: { endpoint: sub.endpoint } });
+    } catch {}
+    pushSynced = false;
     await api('/logout', { method: 'POST' });
     state.me = null;
     go('/login');

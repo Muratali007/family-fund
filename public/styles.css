@@ -307,3 +307,4 @@ textarea.input { min-height: 90px; resize: vertical; }
 @media (display-mode: standalone) {
   .topbar { padding-top: env(safe-area-inset-top); }
 }
+.push-ico { width: 44px; height: 44px; border-radius: 10px; flex: none; display: grid; place-items: center; font-size: 22px; background: var(--primary-soft); }

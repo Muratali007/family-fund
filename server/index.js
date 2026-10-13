@@ -6,6 +6,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const db = require('./db'); // первым — он подгружает .env.local
 const mail = require('./mail');
+const push = require('./push');
 
 const PORT = process.env.PORT || 3000;
 const IS_PROD = process.env.NODE_ENV === 'production';
@@ -125,6 +126,15 @@ function publicUser(u) {
 }
 
 // ---------- уведомления ----------
+const unhtml = (s) => s.replace(/<[^>]+>/g, '').replace(/&(amp|lt|gt|quot|#39);/g, (m, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
+
+// Письмо + push на телефон одним вызовом
+function notify(recipients, subject, content) {
+  const list = recipients.filter(Boolean);
+  mail.notify(list, subject, content);
+  push.send(list.map((r) => r.id), { title: subject, body: unhtml(content.lines.join(' ')).slice(0, 240), url: content.url });
+}
+
 const origin = (req) => process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
 const itemLink = (req, id) => `${origin(req)}/#/item/${id}`;
 const familyEmails = (familyId) =>
@@ -138,7 +148,7 @@ async function notifyStatusChange(req, itemId, to) {
   const link = itemLink(req, item.id);
   const t = mail.esc(item.title);
   if (to === 'funding') {
-    mail.notify(all, `Сбор начался: ${item.title}`, {
+    notify(all, `Сбор начался: ${item.title}`, {
       lines: [
         `Все одобрили «<b>${t}</b>». Нужно собрать <b>${fmt(Number(item.price) - Number(item.own_amount))}</b>.`,
         `Перевод на Kaspi: <b>${mail.esc(item.kaspi_phone || '—')}</b> (${mail.esc(item.kaspi_name || creator.name)}). После перевода прикрепите чек на сайте.`,
@@ -147,12 +157,12 @@ async function notifyStatusChange(req, itemId, to) {
       button: 'Помочь',
     });
   } else if (to === 'rejected') {
-    mail.notify([creator], `Отклонено: ${item.title}`, {
+    notify([creator], `Отклонено: ${item.title}`, {
       lines: [`Семья решила, что «<b>${t}</b>» пока не нужна.`],
       url: link,
     });
   } else if (to === 'done') {
-    mail.notify(all, `Собрано! ${item.title}`, {
+    notify(all, `Собрано! ${item.title}`, {
       lines: [`🎉 На «<b>${t}</b>» собрана вся сумма — ${fmt(item.price)}. Спасибо всем!`],
       url: link,
     });
@@ -359,6 +369,34 @@ app.get('/api/avatar/:id', auth, wrap(async (req, res) => {
   sendDataUrl(req, res, u?.avatar);
 }));
 
+// ---------- push ----------
+app.get('/api/push/key', auth, (req, res) => res.json({ key: push.getPublicKey() }));
+
+app.post('/api/push/subscribe', auth, wrap(async (req, res) => {
+  try {
+    await push.subscribe(req.user.id, req.body?.subscription);
+  } catch (e) {
+    throw bad(e.message);
+  }
+  res.json({ ok: true });
+}));
+
+app.post('/api/push/unsubscribe', auth, wrap(async (req, res) => {
+  await push.unsubscribe(req.user.id, req.body?.endpoint);
+  res.json({ ok: true });
+}));
+
+app.post('/api/push/test', auth, wrap(async (req, res) => {
+  const n = await push.count(req.user.id);
+  if (!n) throw bad('Уведомления на этом аккаунте не включены');
+  const results = await push.send([req.user.id], {
+    title: 'Отбасы Қоры 🔔',
+    body: 'Уведомления работают! Сюда будут приходить новые вещи, голоса и переводы.',
+    url: origin(req) + '/#/',
+  });
+  res.json({ ok: true, sent: results.filter(Boolean).length, devices: n });
+}));
+
 // ---------- items ----------
 app.get('/api/items', auth, wrap(async (req, res) => {
   const fid = req.user.family_id;
@@ -393,7 +431,7 @@ app.post('/api/items', auth, wrap(async (req, res) => {
   await db.run('UPDATE users SET kaspi_phone = ? WHERE id = ? AND kaspi_phone IS NULL', [kaspiPhone, req.user.id]);
 
   const others = (await familyEmails(req.user.family_id)).filter((u) => u.id !== req.user.id);
-  mail.notify(others, `${req.user.name} хочет: ${title}`, {
+  notify(others, `${req.user.name} хочет: ${title}`, {
     lines: [
       `<b>${mail.esc(req.user.name)}</b> (${mail.esc(req.user.role)}) предлагает купить «<b>${mail.esc(title)}</b>» за <b>${fmt(price)}</b>.`,
       own ? `Своих денег есть: ${fmt(own)}, собрать нужно ${fmt(price - own)}.` : '',
@@ -457,7 +495,7 @@ app.post('/api/items/:id/vote', auth, wrap(async (req, res) => {
   await db.run('INSERT INTO votes (item_id, user_id, approve) VALUES (?, ?, ?)', [item.id, req.user.id, approve]);
   const changed = await recalcStatus(item.id);
 
-  mail.notify([await userEmail(item.creator_id)], `${req.user.name} ${approve ? 'за' : 'против'}: ${item.title}`, {
+  notify([await userEmail(item.creator_id)], `${req.user.name} ${approve ? 'за' : 'против'}: ${item.title}`, {
     lines: [`<b>${mail.esc(req.user.name)}</b> (${mail.esc(req.user.role)}) проголосовал(а) ${approve ? '👍 <b>за</b>' : '👎 <b>против</b>'} «${mail.esc(item.title)}».`],
     url: itemLink(req, item.id),
   });
@@ -489,7 +527,7 @@ app.post('/api/items/:id/contribute', auth, wrap(async (req, res) => {
     const changed = await recalcStatus(item.id);
     if (changed) await notifyStatusChange(req, item.id, changed);
   } else {
-    mail.notify([await userEmail(item.creator_id)], `Проверьте перевод: ${fmt(amount)} от ${req.user.name}`, {
+    notify([await userEmail(item.creator_id)], `Проверьте перевод: ${fmt(amount)} от ${req.user.name}`, {
       lines: [
         `<b>${mail.esc(req.user.name)}</b> отправил(а) <b>${fmt(amount)}</b> на «${mail.esc(item.title)}» и прикрепил(а) чек.`,
         comment ? `Комментарий: «${mail.esc(comment)}»` : '',
@@ -525,7 +563,7 @@ app.post('/api/contributions/:id/confirm', auth, wrap(async (req, res) => {
   if (c.status !== 'pending') throw bad('Этот взнос уже проверен');
   await db.run(`UPDATE contributions SET status = 'confirmed', reviewed_at = ${db.kind === 'postgres' ? 'NOW()' : "datetime('now')"} WHERE id = ?`, [c.id]);
   const changed = await recalcStatus(c.item_id);
-  mail.notify([await userEmail(c.user_id)], `Взнос подтверждён: ${fmt(c.amount)}`, {
+  notify([await userEmail(c.user_id)], `Взнос подтверждён: ${fmt(c.amount)}`, {
     lines: [`✅ ${mail.esc(req.user.name)} подтвердил(а), что получил(а) ваш перевод <b>${fmt(c.amount)}</b> на «${mail.esc(c.title)}». Спасибо!`],
     url: itemLink(req, c.item_id),
   });
@@ -542,7 +580,7 @@ app.post('/api/contributions/:id/reject', auth, wrap(async (req, res) => {
     `UPDATE contributions SET status = 'rejected', reject_reason = ?, reviewed_at = ${db.kind === 'postgres' ? 'NOW()' : "datetime('now')"} WHERE id = ?`,
     [reason, c.id]
   );
-  mail.notify([await userEmail(c.user_id)], `Взнос не подтверждён: ${fmt(c.amount)}`, {
+  notify([await userEmail(c.user_id)], `Взнос не подтверждён: ${fmt(c.amount)}`, {
     lines: [
       `❌ ${mail.esc(req.user.name)} не нашёл(ла) ваш перевод <b>${fmt(c.amount)}</b> на «${mail.esc(c.title)}».`,
       `Причина: «${mail.esc(reason)}»`,
@@ -578,6 +616,7 @@ app.use((err, req, res, next) => {
 });
 
 db.init()
+  .then(() => push.init())
   .then(() => app.listen(PORT, () =>
     console.log(`Сервер запущен: http://localhost:${PORT} (БД: ${db.kind}, почта: ${mail.enabled ? 'Brevo' : 'выкл'})`)))
   .catch((e) => {
