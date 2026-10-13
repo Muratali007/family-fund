@@ -76,6 +76,37 @@ function resizeImage(file, max, quality = 0.82) {
   });
 }
 
+// Чек: фото сжимаем, PDF берём как есть
+function readReceipt(file) {
+  if (file.type === 'application/pdf') {
+    if (file.size > 4 * 1024 * 1024) return Promise.reject(new Error('PDF больше 4 МБ'));
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = () => reject(new Error('Не удалось прочитать файл'));
+      r.readAsDataURL(file);
+    });
+  }
+  return resizeImage(file, 1600, 0.85);
+}
+
+const itemUrl = (id) => `${location.origin}/#/item/${id}`;
+
+// Готовый текст для семейной группы в WhatsApp
+function waText(i) {
+  const author = member(i.creatorId)?.name || '';
+  if (i.status === 'voting') {
+    return `🗳️ ${author} хочет купить «${i.title}» за ${money(i.price)}.\nНужна ли эта вещь? Проголосуйте:\n${itemUrl(i.id)}`;
+  }
+  if (i.status === 'funding') {
+    return `💰 Сбор на «${i.title}»: собрано ${money(i.collected)} из ${money(i.price)}, осталось ${money(i.remaining)}.\n` +
+      `Kaspi: ${i.kaspiPhone}${i.kaspiName ? ` (${i.kaspiName})` : ''}\nПомочь и прикрепить чек:\n${itemUrl(i.id)}`;
+  }
+  if (i.status === 'done') return `🎉 Собрали на «${i.title}» — ${money(i.price)}! Спасибо всем 💚\n${itemUrl(i.id)}`;
+  return `«${i.title}» — семья решила пока не покупать.\n${itemUrl(i.id)}`;
+}
+const waLink = (i) => 'https://wa.me/?text=' + encodeURIComponent(waText(i));
+
 function formData(form) {
   return Object.fromEntries(new FormData(form).entries());
 }
@@ -98,6 +129,7 @@ async function loadMe() {
     state.me = d.user;
     state.family = d.family;
     state.members = d.members;
+    state.mailEnabled = d.mailEnabled;
     return true;
   } catch {
     state.me = null;
@@ -287,6 +319,8 @@ async function renderHome() {
   const counts = { voting: 0, funding: 0, done: 0, rejected: 0 };
   state.items.forEach((i) => counts[i.status]++);
   const needMyVote = state.items.filter((i) => i.status === 'voting' && i.creatorId !== state.me.id && i.myVote === null).length;
+  const needMyCheck = state.items.filter((i) => i.creatorId === state.me.id && i.pendingCount > 0).reduce((s, i) => s + i.pendingCount, 0);
+  const todo = [needMyVote && `ждут вашего голоса: <b>${needMyVote}</b>`, needMyCheck && `чеков на проверку: <b>${needMyCheck}</b>`].filter(Boolean);
   const tabs = ['voting', 'funding', 'done', 'rejected'];
   const list = state.items.filter((i) => i.status === state.tab);
 
@@ -294,7 +328,7 @@ async function renderHome() {
     <div class="family-head">
       <div class="grow">
         <h1>Привет, ${esc(state.me.name)} 👋</h1>
-        <p class="muted" style="margin:4px 0 0">${needMyVote ? `Ждут вашего голоса: <b>${needMyVote}</b>` : 'Что купим вместе?'}</p>
+        <p class="muted" style="margin:4px 0 0">${todo.length ? '⚡ ' + todo.join(' · ') : 'Что купим вместе?'}</p>
       </div>
       <a class="stack" href="#/family" title="Семья">${state.members.slice(0, 6).map((m) => avatar(m)).join('')}</a>
     </div>
@@ -318,7 +352,8 @@ function itemCard(i) {
   } else if (i.status === 'funding' || i.status === 'done') {
     extra = `<div class="progress"><div style="width:${pct(i.collected, i.price)}%"></div></div>
       <div class="money-row"><span>Собрано <b>${money(i.collected)}</b></span><span class="muted">${pct(i.collected, i.price)}%</span></div>
-      ${i.status === 'funding' ? `<div class="money-row"><span class="muted">Осталось</span><b>${money(i.remaining)}</b></div>` : ''}`;
+      ${i.status === 'funding' ? `<div class="money-row"><span class="muted">Осталось</span><b>${money(i.remaining)}</b></div>` : ''}
+      ${i.pendingCount ? `<div class="note small">⏳ На проверке: ${money(i.pendingSum)}${i.creatorId === state.me.id ? ' — проверьте чеки' : ''}</div>` : ''}`;
   }
   return `<a class="card item-card" href="#/item/${i.id}">
     <div class="item-photo">${i.hasPhoto ? `<img src="/api/items/${i.id}/photo" alt="" loading="lazy">` : '<div class="ph">🎁</div>'}${badge(i.status)}</div>
@@ -347,6 +382,10 @@ function renderNew() {
           <div class="field"><label>Цена, ₸</label><input class="input" name="price" type="number" inputmode="numeric" min="1" step="1" required></div>
           <div class="field"><label>Уже есть своих, ₸</label><input class="input" name="ownAmount" type="number" inputmode="numeric" min="0" step="1" value="0"></div>
         </div>
+        <div class="row">
+          <div class="field"><label>Номер Kaspi для переводов</label><input class="input" name="kaspiPhone" type="tel" inputmode="tel" required placeholder="+7 7XX XXX XX XX" value="${esc(state.me.kaspiPhone || '')}"></div>
+          <div class="field"><label>Имя в Kaspi <span class="muted">(необяз.)</span></label><input class="input" name="kaspiName" maxlength="60" placeholder="Ерлан А." value="${esc(state.me.name)}"></div>
+        </div>
         <div class="note" id="calc" style="margin-bottom:14px">Нужно собрать: 0 ₸</div>
         <button class="btn btn-primary btn-block">Отправить на голосование</button>
       </form>
@@ -372,6 +411,7 @@ function renderNew() {
     withBusy(f.querySelector('button'), async () => {
       const { id } = await api('/items', { method: 'POST', body: { ...formData(f), photo } });
       state.tab = 'voting';
+      state.shareHint = { id, text: 'Заявка создана! Сообщите семье в WhatsApp, чтобы проголосовали.' };
       toast('Отправлено на голосование');
       go('/item/' + id);
     });
@@ -379,6 +419,12 @@ function renderNew() {
 }
 
 // ---------- item page ----------
+const C_STATUS = {
+  pending: '<span class="badge badge-voting">⏳ Проверяется</span>',
+  confirmed: '<span class="badge badge-done">✅ Получено</span>',
+  rejected: '<span class="badge badge-rejected">❌ Отклонено</span>',
+};
+
 async function renderItem(id) {
   shell('<div class="spinner"></div>');
   let i;
@@ -393,6 +439,11 @@ async function renderItem(id) {
   const isMine = i.creatorId === state.me.id;
   const voters = state.members.filter((m) => m.id !== i.creatorId);
   const voteOf = (uid) => i.votes.find((v) => v.userId === uid);
+  const hint = state.shareHint && state.shareHint.id === i.id ? state.shareHint : null;
+  state.shareHint = null;
+  // последний свой взнос отклонён и ещё не переотправлен
+  const myLast = i.contributions.find((c) => c.userId === state.me.id);
+  const myRejected = myLast && myLast.status === 'rejected' ? myLast : null;
 
   let action = '';
   if (i.status === 'voting') {
@@ -407,16 +458,34 @@ async function renderItem(id) {
         <p class="muted small" style="margin:8px 0 0">${i.myVote === null ? 'Сбор начнётся, когда все члены семьи одобрят.' : 'Голос можно изменить, пока голосуют остальные.'}</p>`;
     }
   } else if (i.status === 'funding') {
-    action = `<h3 style="margin-bottom:10px">Внести деньги</h3>
-      <form id="cf">
-        <div class="field"><input class="input" name="amount" type="number" inputmode="numeric" min="1" max="${i.remaining}" step="1" placeholder="Сумма, ₸ (макс. ${money(i.remaining)})" required></div>
-        <div class="field"><input class="input" name="comment" maxlength="200" placeholder="Комментарий (необязательно)"></div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-          ${[1000, 5000, 10000].filter((v) => v < i.remaining).map((v) => `<button type="button" class="btn btn-ghost btn-sm" data-q="${v}">${money(v)}</button>`).join('')}
-          <button type="button" class="btn btn-ghost btn-sm" data-q="${i.remaining}">Всё: ${money(i.remaining)}</button>
-        </div>
-        <button class="btn btn-primary btn-block">💸 Пожертвовать</button>
-      </form>`;
+    const kaspi = `
+      <div class="kaspi">
+        <div class="kaspi-logo">K</div>
+        <div class="grow"><div class="muted small">Перевод на Kaspi${i.kaspiName ? ' · ' + esc(i.kaspiName) : ''}</div>
+          <div class="kaspi-phone">${esc(i.kaspiPhone || 'номер не указан')}</div></div>
+        ${i.kaspiPhone ? '<button type="button" class="btn btn-sm" id="copyKaspi">Копировать</button>' : ''}
+      </div>`;
+    if (i.available <= 0) {
+      action = `${kaspi}<div class="note" style="margin-top:12px">Вся оставшаяся сумма уже отправлена и ждёт подтверждения ${esc(author?.name || 'автора')}.</div>`;
+    } else {
+      action = `<h3 style="margin-bottom:10px">💚 Помочь</h3>
+        ${kaspi}
+        <ol class="steps"><li>Скопируйте номер и переведите деньги в приложении Kaspi.</li>
+          <li>Сделайте скриншот или скачайте чек.</li>
+          <li>Прикрепите чек ниже — ${isMine ? 'взнос засчитается сразу' : `${esc(author?.name || 'автор')} проверит и подтвердит`}.</li></ol>
+        <form id="cf">
+          ${myRejected ? `<div class="error-box">Ваш перевод ${money(myRejected.amount)} отклонён: «${esc(myRejected.rejectReason)}». Проверьте и отправьте ещё раз.</div>` : ''}
+          <div class="field"><label>Сколько перевели, ₸</label><input class="input" name="amount" type="number" inputmode="numeric" min="1" max="${i.available}" step="1" placeholder="Не больше ${money(i.available)}" required></div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;margin:-4px 0 14px">
+            ${[1000, 5000, 10000].filter((v) => v < i.available).map((v) => `<button type="button" class="btn btn-ghost btn-sm" data-q="${v}">${money(v)}</button>`).join('')}
+            <button type="button" class="btn btn-ghost btn-sm" data-q="${i.available}">Всё: ${money(i.available)}</button>
+          </div>
+          <label class="receipt-drop" id="rdrop"><input type="file" accept="image/*,application/pdf" id="rfile">
+            <span id="rlabel">🧾 Прикрепить чек (фото или PDF)</span></label>
+          <div class="field" style="margin-top:14px"><input class="input" name="comment" maxlength="200" placeholder="Комментарий (необязательно)"></div>
+          <button class="btn btn-primary btn-block">Я перевёл(а) — отправить чек</button>
+        </form>`;
+    }
   } else if (i.status === 'done') {
     action = `<div class="note" style="background:var(--ok-soft);color:var(--ok)">🎉 Деньги собраны! Можно покупать.</div>`;
   } else {
@@ -424,8 +493,30 @@ async function renderItem(id) {
   }
 
   const showMoney = i.status === 'funding' || i.status === 'done';
+  const contribRow = (c) => {
+    const m = member(c.userId);
+    const receipt = c.receiptType
+      ? `<a href="/api/contributions/${c.id}/receipt" target="_blank" rel="noopener" class="small">🧾 ${c.receiptType === 'pdf' ? 'Чек (PDF)' : 'Чек'}</a>` : '';
+    const review = isMine && c.status === 'pending' ? `
+      <div class="review">
+        <button class="btn btn-ok btn-sm" data-confirm="${c.id}">✅ Деньги пришли</button>
+        <button class="btn btn-ghost btn-sm" data-reject="${c.id}">❌ Не пришли</button>
+        <form class="reject-form hidden" data-rform="${c.id}">
+          <input class="input" name="reason" maxlength="200" required placeholder="Причина: например, перевода нет в Kaspi">
+          <button class="btn btn-no btn-sm">Отклонить</button>
+        </form>
+      </div>` : '';
+    return `<div class="list-row contrib">${avatar(m)}
+      <div class="grow"><div class="name">${esc(m?.name || '—')} · <b>${money(c.amount)}</b></div>
+        <div class="contrib-meta">${C_STATUS[c.status] || ''} ${receipt}</div>
+        ${c.comment ? `<div class="muted small">${esc(c.comment)}</div>` : ''}
+        ${c.status === 'rejected' && c.rejectReason ? `<div class="vote-no small">Причина: ${esc(c.rejectReason)}</div>` : ''}
+        ${review}</div></div>`;
+  };
+
   shell(`
     <a class="back" href="#/">← Все вещи</a>
+    ${hint ? `<div class="share-hint"><span>${esc(hint.text)}</span><a class="btn btn-wa" href="${waLink(i)}" target="_blank" rel="noopener">📲 WhatsApp</a></div>` : ''}
     <div class="detail">
       <div>
         <div class="detail-photo">${i.hasPhoto ? `<img src="/api/items/${i.id}/photo" alt="">` : '<div class="ph">🎁</div>'}</div>
@@ -433,7 +524,10 @@ async function renderItem(id) {
       </div>
       <div>
         <div class="card card-pad">
-          ${badge(i.status)}
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+            ${badge(i.status)}
+            <a class="btn btn-wa btn-sm" href="${waLink(i)}" target="_blank" rel="noopener">📲 В WhatsApp</a>
+          </div>
           <h1 style="margin:10px 0 4px">${esc(i.title)}</h1>
           <div class="item-meta">${avatar(author, 'sm')}<span>${esc(author?.name || '—')} · ${esc(author?.role || '')}</span></div>
           <div class="stats">
@@ -441,11 +535,18 @@ async function renderItem(id) {
             <div class="stat"><div class="label">Собрано</div><div class="val">${money(i.collected)}</div></div>
             <div class="stat"><div class="label">Осталось</div><div class="val">${money(i.remaining)}</div></div>
           </div>
-          ${showMoney ? `<div class="progress"><div style="width:${pct(i.collected, i.price)}%"></div></div>
-            <p class="muted small" style="margin:6px 0 16px">${pct(i.collected, i.price)}% · своих у автора ${money(i.ownAmount)}</p>` : ''}
+          ${showMoney ? `<div class="progress">
+              <div style="width:${pct(i.collected, i.price)}%"></div>
+              <div class="pending-bar" style="width:${pct(i.pendingSum, i.price)}%"></div></div>
+            <p class="muted small" style="margin:6px 0 16px">${pct(i.collected, i.price)}% · своих у автора ${money(i.ownAmount)}${i.pendingSum ? ` · ⏳ на проверке ${money(i.pendingSum)}` : ''}</p>` : ''}
           ${action}
-          ${isMine && i.contributed === 0 ? `<button class="btn btn-ghost btn-sm" id="del" style="margin-top:14px">Удалить заявку</button>` : ''}
+          ${isMine && i.contribCount === 0 ? `<button class="btn btn-ghost btn-sm" id="del" style="margin-top:14px">Удалить заявку</button>` : ''}
         </div>
+
+        ${showMoney ? `<div class="card card-pad section">
+          <h3>Переводы${isMine && i.pendingCount ? ` <span class="badge badge-voting">проверьте: ${i.pendingCount}</span>` : ''}</h3>
+          <div class="list">${i.contributions.length ? i.contributions.map(contribRow).join('') : '<p class="muted">Пока никто не перевёл — будьте первым!</p>'}</div>
+        </div>` : ''}
 
         <div class="card card-pad section">
           <h3>Голоса семьи</h3>
@@ -455,35 +556,79 @@ async function renderItem(id) {
             return `<div class="list-row">${avatar(m)}<div class="grow"><div class="name">${esc(m.name)}</div><div class="muted small">${roleLine(m)}</div></div>${st}</div>`;
           }).join('') : '<p class="muted">В семье пока больше никого нет</p>'}</div>
         </div>
-
-        ${showMoney ? `<div class="card card-pad section">
-          <h3>Кто сколько внёс</h3>
-          <div class="list">${i.contributions.length ? i.contributions.map((c) => {
-            const m = member(c.userId);
-            return `<div class="list-row">${avatar(m)}<div class="grow"><div class="name">${esc(m?.name || '—')}</div>${c.comment ? `<div class="muted small">${esc(c.comment)}</div>` : ''}</div><b>${money(c.amount)}</b></div>`;
-          }).join('') : '<p class="muted">Пока никто не внёс — будьте первым!</p>'}</div>
-        </div>` : ''}
       </div>
     </div>`);
 
   document.querySelectorAll('[data-vote]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
-    await api(`/items/${id}/vote`, { method: 'POST', body: { approve: b.dataset.vote === '1' } });
+    const r = await api(`/items/${id}/vote`, { method: 'POST', body: { approve: b.dataset.vote === '1' } });
     toast('Голос учтён');
+    if (r.status === 'funding') state.shareHint = { id, text: 'Все одобрили — сбор начался! Сообщите семье в WhatsApp.' };
     renderItem(id);
   })));
 
+  const copy = document.getElementById('copyKaspi');
+  if (copy) {
+    copy.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(i.kaspiPhone.replace(/[^\d+]/g, ''));
+        toast('Номер скопирован: ' + i.kaspiPhone);
+      } catch {
+        toast(i.kaspiPhone);
+      }
+    };
+  }
+
   const cf = document.getElementById('cf');
   if (cf) {
+    let receipt = null;
+    if (myRejected) cf.amount.value = Math.min(myRejected.amount, i.available);
     cf.querySelectorAll('[data-q]').forEach((b) => (b.onclick = () => (cf.amount.value = b.dataset.q)));
+    document.getElementById('rfile').onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const drop = document.getElementById('rdrop');
+      try {
+        receipt = await readReceipt(file);
+        const isPdf = file.type === 'application/pdf';
+        drop.classList.add('has-file');
+        drop.querySelector('img')?.remove();
+        document.getElementById('rlabel').textContent = isPdf ? `📄 ${file.name}` : '✅ Чек прикреплён — нажмите, чтобы заменить';
+        if (!isPdf) drop.insertAdjacentHTML('afterbegin', `<img src="${receipt}" alt="">`);
+      } catch (er) {
+        toast(er.message, true);
+      }
+    };
     cf.onsubmit = (e) => {
       e.preventDefault();
+      if (!receipt) return toast('Прикрепите чек перевода', true);
       withBusy(cf.querySelector('button:not([type=button])'), async () => {
-        await api(`/items/${id}/contribute`, { method: 'POST', body: formData(cf) });
-        toast('Спасибо! Взнос добавлен 💚');
+        const r = await api(`/items/${id}/contribute`, { method: 'POST', body: { ...formData(cf), receipt } });
+        toast(r.status === 'pending' ? 'Чек отправлен — ждём подтверждения 💚' : 'Взнос засчитан 💚');
+        state.shareHint = { id, text: 'Спасибо! Напишите семье в WhatsApp, сколько осталось собрать.' };
         renderItem(id);
       });
     };
   }
+
+  document.querySelectorAll('[data-confirm]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
+    const r = await api(`/contributions/${b.dataset.confirm}/confirm`, { method: 'POST' });
+    toast('Взнос подтверждён ✅');
+    if (r.status === 'done') state.shareHint = { id, text: '🎉 Всё собрано! Обрадуйте семью в WhatsApp.' };
+    renderItem(id);
+  })));
+  document.querySelectorAll('[data-reject]').forEach((b) => (b.onclick = () => {
+    const form = document.querySelector(`[data-rform="${b.dataset.reject}"]`);
+    form.classList.toggle('hidden');
+    form.reason.focus();
+  }));
+  document.querySelectorAll('[data-rform]').forEach((form) => (form.onsubmit = (e) => {
+    e.preventDefault();
+    withBusy(form.querySelector('button'), async () => {
+      await api(`/contributions/${form.dataset.rform}/reject`, { method: 'POST', body: formData(form) });
+      toast('Взнос отклонён — сумма снова доступна для сбора');
+      renderItem(id);
+    });
+  }));
 
   const del = document.getElementById('del');
   if (del) {
@@ -541,6 +686,10 @@ async function renderFamily() {
           <div class="field"><label>Имя</label><input class="input" name="name" value="${esc(state.me.name)}" required maxlength="60"></div>
           <div class="field"><label>Кто вы в семье</label><select class="input" name="role">${roleOpts}</select></div>
           <div class="field"><label>Кому вы приходитесь</label><select class="input" name="relationTo"><option value="">—</option>${relOpts}</select></div>
+          <div class="field"><label>Мой номер Kaspi</label><input class="input" name="kaspiPhone" type="tel" inputmode="tel" placeholder="+7 7XX XXX XX XX" value="${esc(state.me.kaspiPhone || '')}">
+            <span class="hint">Подставится, когда вы создаёте вещь</span></div>
+          <label class="check"><input type="checkbox" name="notifyEmail" ${state.me.notifyEmail ? 'checked' : ''}>
+            <span>Присылать письма на ${esc(state.me.email)}<br><span class="muted small">новые вещи, голоса, переводы и их проверка${state.mailEnabled ? '' : ' · отправка писем на сайте пока не настроена'}</span></span></label>
           <button class="btn btn-primary btn-block">Сохранить</button>
           <button type="button" class="btn btn-ghost btn-block" id="logout" style="margin-top:10px">Выйти</button>
         </form>
@@ -568,6 +717,7 @@ async function renderFamily() {
     e.preventDefault();
     withBusy(pf.querySelector('button:not([type=button])'), async () => {
       const body = formData(pf);
+      body.notifyEmail = pf.notifyEmail.checked;
       if (avatarData) body.avatar = avatarData;
       await api('/me', { method: 'PUT', body });
       toast('Профиль сохранён');

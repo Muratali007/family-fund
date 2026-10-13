@@ -248,3 +248,49 @@ textarea.input { min-height: 90px; resize: vertical; }
 .note { background: var(--accent-soft); color: var(--accent); padding: 10px 12px; border-radius: 10px; font-weight: 600; font-size: .9rem; }
 .spinner { width: 28px; height: 28px; border: 3px solid var(--border); border-top-color: var(--primary); border-radius: 50%; animation: spin .8s linear infinite; margin: 60px auto; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ---------- Kaspi, чеки, WhatsApp ---------- */
+.kaspi {
+  display: flex; align-items: center; gap: 12px; padding: 12px 14px;
+  border: 1px solid var(--border); border-radius: 14px; background: var(--surface-2);
+}
+.kaspi .grow { flex: 1; min-width: 0; }
+.kaspi-logo {
+  width: 40px; height: 40px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  background: #f14635; color: #fff; font-weight: 800; font-size: 1.2rem;
+}
+.kaspi-phone { font-weight: 800; font-size: 1.1rem; letter-spacing: .02em; }
+.steps { margin: 12px 0 14px; padding-left: 20px; color: var(--muted); font-size: .9rem; }
+.steps li { margin-bottom: 4px; }
+
+.receipt-drop {
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
+  border: 2px dashed var(--border); border-radius: 14px; padding: 18px; cursor: pointer;
+  background: var(--surface-2); color: var(--muted); font-weight: 700; text-align: center; min-height: 72px;
+}
+.receipt-drop input { display: none; }
+.receipt-drop.has-file { border-style: solid; border-color: var(--ok); color: var(--ok); }
+.receipt-drop img { max-height: 180px; width: auto; border-radius: 10px; }
+
+.progress { position: relative; display: flex; }
+.progress > div { flex: none; }
+.progress > .pending-bar {
+  background: repeating-linear-gradient(45deg, var(--accent), var(--accent) 6px, color-mix(in srgb, var(--accent) 60%, transparent) 6px, color-mix(in srgb, var(--accent) 60%, transparent) 12px);
+  border-radius: 0 999px 999px 0;
+}
+
+.contrib { align-items: flex-start; }
+.contrib-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 4px 0; }
+.review { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.reject-form { display: flex; gap: 8px; width: 100%; }
+.reject-form .input { min-height: 38px; padding: 8px 12px; }
+
+.btn-wa { background: #25d366; color: #fff; text-decoration: none; }
+.btn-wa:hover { filter: brightness(1.05); }
+.share-hint {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: space-between;
+  background: var(--ok-soft); color: var(--ok); font-weight: 700; padding: 12px 14px; border-radius: 14px; margin-bottom: 16px;
+}
+
+.check { display: flex; gap: 10px; align-items: flex-start; margin: 4px 0 16px; cursor: pointer; font-weight: 600; font-size: .92rem; }
+.check input { width: 20px; height: 20px; margin-top: 2px; accent-color: var(--primary); flex: none; }

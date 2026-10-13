@@ -63,6 +63,19 @@ const SCHEMA = (pg) => {
   ];
 };
 
+// Новые колонки для уже существующих баз: [таблица, колонка, тип]
+const COLUMNS = (pg) => [
+  ['users', 'kaspi_phone', 'TEXT'],
+  ['users', 'notify_email', 'INTEGER NOT NULL DEFAULT 1'],
+  ['items', 'kaspi_phone', 'TEXT'],
+  ['items', 'kaspi_name', 'TEXT'],
+  // старые взносы (до чеков) считаем подтверждёнными
+  ['contributions', 'status', "TEXT NOT NULL DEFAULT 'confirmed'"],
+  ['contributions', 'receipt', 'TEXT'],
+  ['contributions', 'reject_reason', 'TEXT'],
+  ['contributions', 'reviewed_at', pg ? 'TIMESTAMPTZ' : 'TEXT'],
+];
+
 let impl;
 
 if (usePg) {
@@ -88,6 +101,7 @@ if (usePg) {
       await direct.connect();
       try {
         for (const s of SCHEMA(true)) await direct.query(s);
+        for (const [t, c, type] of COLUMNS(true)) await direct.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} ${type}`);
       } finally {
         await direct.end();
       }
@@ -112,6 +126,10 @@ if (usePg) {
   impl = {
     async init() {
       for (const s of SCHEMA(false)) db.exec(s);
+      for (const [t, c, type] of COLUMNS(false)) {
+        const has = db.prepare(`PRAGMA table_info(${t})`).all().some((r) => r.name === c);
+        if (!has) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
+      }
     },
     async all(sql, params = []) {
       return db.prepare(sql).all(...params);
