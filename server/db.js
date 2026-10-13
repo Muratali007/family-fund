@@ -52,6 +52,14 @@ const SCHEMA = (pg) => {
       created_at ${ts},
       PRIMARY KEY (item_id, user_id)
     )`,
+    `CREATE TABLE IF NOT EXISTS messages (
+      id ${id},
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id),
+      contribution_id INTEGER,
+      text TEXT NOT NULL,
+      created_at ${ts}
+    )`,
     `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL

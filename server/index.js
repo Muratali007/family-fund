@@ -203,6 +203,7 @@ const ITEM_COLS = `i.id, i.family_id, i.creator_id, i.title, i.description, i.pr
   (SELECT COALESCE(SUM(amount), 0) FROM contributions c WHERE c.item_id = i.id AND c.status = 'pending') AS pending_sum,
   (SELECT COUNT(*) FROM contributions c WHERE c.item_id = i.id AND c.status = 'pending') AS pending_count,
   (SELECT COUNT(*) FROM contributions c WHERE c.item_id = i.id) AS contrib_count,
+  (SELECT COUNT(*) FROM messages m WHERE m.item_id = i.id) AS msg_count,
   (SELECT COUNT(*) FROM votes v WHERE v.item_id = i.id AND v.approve = 1) AS yes_count,
   (SELECT COUNT(*) FROM votes v WHERE v.item_id = i.id AND v.approve = 0) AS no_count`;
 
@@ -231,6 +232,7 @@ function shapeItem(i, votersCount, myVote) {
     // сколько ещё можно отправить, с учётом взносов на проверке
     available: Math.max(0, remaining - Number(i.pending_sum)),
     contribCount: Number(i.contrib_count),
+    messageCount: Number(i.msg_count || 0),
     kaspiPhone: i.kaspi_phone,
     kaspiName: i.kaspi_name,
     status: i.status,
@@ -458,6 +460,7 @@ app.get('/api/items/:id', auth, wrap(async (req, res) => {
   res.json({
     ...shapeItem(item, Number(n) - 1, mine ? mine.approve : null),
     votes: votes.map((v) => ({ userId: v.user_id, approve: !!Number(v.approve), at: v.created_at })),
+    messages: await listMessages(item.id),
     contributions: contributions.map((c) => ({
       id: c.id,
       userId: c.user_id,
@@ -501,6 +504,70 @@ app.post('/api/items/:id/vote', auth, wrap(async (req, res) => {
   });
   if (changed) await notifyStatusChange(req, item.id, changed);
   res.json({ ok: true, status: changed });
+}));
+
+// ---------- обсуждение вещи ----------
+async function listMessages(itemId, afterId = 0) {
+  const rows = await db.all(
+    `SELECT m.id, m.user_id, m.text, m.contribution_id, m.created_at, c.amount AS c_amount, c.user_id AS c_user_id, c.status AS c_status
+       FROM messages m LEFT JOIN contributions c ON c.id = m.contribution_id
+      WHERE m.item_id = ? AND m.id > ? ORDER BY m.id`,
+    [itemId, afterId]
+  );
+  return rows.map((m) => ({
+    id: m.id,
+    userId: m.user_id,
+    text: m.text,
+    at: m.created_at,
+    contribution: m.contribution_id
+      ? { id: m.contribution_id, amount: Number(m.c_amount), userId: m.c_user_id, status: m.c_status }
+      : null,
+  }));
+}
+
+app.get('/api/items/:id/messages', auth, wrap(async (req, res) => {
+  const item = await loadItem(Number(req.params.id), req.user.family_id);
+  res.json(await listMessages(item.id, Number(req.query.after) || 0));
+}));
+
+app.post('/api/items/:id/messages', auth, wrap(async (req, res) => {
+  const item = await loadItem(Number(req.params.id), req.user.family_id);
+  const text = str(req.body?.text, 'Сообщение', { min: 1, max: 1000 });
+  let contributionId = null;
+  let quoted = null;
+  if (req.body?.contributionId) {
+    quoted = await db.get('SELECT id, user_id, amount FROM contributions WHERE id = ? AND item_id = ?', [Number(req.body.contributionId), item.id]);
+    if (!quoted) throw bad('Перевод не найден');
+    contributionId = quoted.id;
+  }
+  const r = await db.run('INSERT INTO messages (item_id, user_id, contribution_id, text) VALUES (?, ?, ?, ?) RETURNING id', [
+    item.id, req.user.id, contributionId, text,
+  ]);
+
+  // push всем остальным членам семьи (без писем — чат был бы слишком шумным для почты)
+  const others = (await db.all('SELECT id FROM users WHERE family_id = ? AND id <> ?', [req.user.family_id, req.user.id])).map((u) => u.id);
+  let prefix = '';
+  if (quoted) {
+    const who = await db.get('SELECT name FROM users WHERE id = ?', [quoted.user_id]);
+    prefix = `↪ ${who?.name || ''} · ${fmt(quoted.amount)}: `;
+  }
+  push.send(others, {
+    title: `💬 ${req.user.name} · ${item.title}`,
+    body: (prefix + text).slice(0, 240),
+    url: itemLink(req, item.id) + '?chat',
+  });
+  res.json({ id: r.rows[0].id });
+}));
+
+app.delete('/api/messages/:id', auth, wrap(async (req, res) => {
+  const m = await db.get(
+    'SELECT m.id, m.user_id FROM messages m JOIN items i ON i.id = m.item_id WHERE m.id = ? AND i.family_id = ?',
+    [Number(req.params.id), req.user.family_id]
+  );
+  if (!m) throw new HttpError(404, 'Не найдено');
+  if (m.user_id !== req.user.id) throw new HttpError(403, 'Удалить можно только своё сообщение');
+  await db.run('DELETE FROM messages WHERE id = ?', [m.id]);
+  res.json({ ok: true });
 }));
 
 // ---------- взносы (Kaspi + чек) ----------
@@ -597,6 +664,7 @@ app.delete('/api/items/:id', auth, wrap(async (req, res) => {
   if (item.creator_id !== req.user.id) throw new HttpError(403, 'Удалить может только автор');
   if (Number(item.contrib_count) > 0) throw bad('Нельзя удалить — по вещи уже есть взносы');
   await db.run('DELETE FROM votes WHERE item_id = ?', [item.id]);
+  await db.run('DELETE FROM messages WHERE item_id = ?', [item.id]);
   await db.run('DELETE FROM items WHERE id = ?', [item.id]);
   res.json({ ok: true });
 }));

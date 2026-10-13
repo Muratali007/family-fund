@@ -311,3 +311,31 @@ textarea.input { min-height: 90px; resize: vertical; }
 .btn-kaspi { background: #f14635; color: #fff; }
 .btn-kaspi:hover { filter: brightness(1.05); }
 .kaspi-logo.sm { width: 24px; height: 24px; font-size: .85rem; border-radius: 6px; background: #fff; color: #f14635; }
+
+/* ---------- обсуждение ---------- */
+.chat-list {
+  display: flex; flex-direction: column; gap: 10px; margin: 12px 0;
+  max-height: 420px; overflow-y: auto; overscroll-behavior: contain; padding-right: 2px;
+}
+.chat-empty { margin: 4px 0; font-size: .9rem; }
+.msg { display: flex; align-items: flex-end; gap: 8px; max-width: 88%; }
+.msg.mine { align-self: flex-end; flex-direction: row-reverse; }
+.bubble {
+  background: var(--surface-2); border-radius: 16px 16px 16px 4px; padding: 8px 12px; min-width: 0;
+}
+.msg.mine .bubble { background: var(--primary-soft); border-radius: 16px 16px 4px 16px; }
+.msg-name { font-size: .78rem; font-weight: 800; color: var(--primary); margin-bottom: 2px; }
+.msg-text { white-space: pre-wrap; word-break: break-word; }
+.msg-meta { font-size: .72rem; color: var(--muted); margin-top: 4px; text-align: right; }
+.chat-quote {
+  border-left: 3px solid var(--accent); padding: 2px 8px; margin: 2px 0 6px;
+  font-size: .8rem; font-weight: 700; color: var(--muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+}
+.chat-quote .badge { font-size: .68rem; padding: 2px 6px; }
+.reply-chip { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: var(--surface-2); border-radius: 10px; padding: 4px 10px; margin-bottom: 8px; }
+.reply-chip .chat-quote { margin: 0; }
+.chat-input { display: flex; gap: 8px; align-items: flex-end; }
+.chat-input textarea { min-height: 46px; max-height: 140px; resize: none; }
+.chat-input .btn { flex: none; width: 46px; padding: 0; font-size: 1.1rem; }
+.link-btn { background: none; border: 0; padding: 0; color: var(--primary); font-weight: 700; cursor: pointer; font: inherit; }
+.contrib-meta .link-btn { font-size: .85rem; }

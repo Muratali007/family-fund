@@ -317,8 +317,9 @@ async function loadMe() {
 }
 
 async function route() {
-  const hash = location.hash.slice(1) || '/';
+  const [hash, query] = (location.hash.slice(1) || '/').split('?');
   const [, page, id] = hash.split('/');
+  clearInterval(state.chatTimer);
   if (!state.roles.length) state.roles = await api('/roles').catch(() => []);
 
   if (page === 'login' || page === 'register' || page === 'join') {
@@ -329,7 +330,7 @@ async function route() {
 
   window.scrollTo(0, 0);
   if (page === 'new') return renderNew();
-  if (page === 'item' && id) return renderItem(Number(id));
+  if (page === 'item' && id) return renderItem(Number(id), { chat: query === 'chat' });
   if (page === 'family') return renderFamily();
   return renderHome();
 }
@@ -544,7 +545,8 @@ function itemCard(i) {
       <h3>${esc(i.title)}</h3>
       <div class="price">${money(i.price)}</div>
       ${extra}
-      <div class="item-meta">${avatar(author, 'sm')}<span>${esc(author?.name || '—')}</span></div>
+      <div class="item-meta">${avatar(author, 'sm')}<span>${esc(author?.name || '—')}</span>
+        ${i.messageCount ? `<span class="spacer"></span><span>💬 ${i.messageCount}</span>` : ''}</div>
     </div></a>`;
 }
 
@@ -608,7 +610,7 @@ const C_STATUS = {
   rejected: '<span class="badge badge-rejected">❌ Отклонено</span>',
 };
 
-async function renderItem(id) {
+async function renderItem(id, opts = {}) {
   shell('<div class="spinner"></div>');
   let i;
   try {
@@ -694,7 +696,8 @@ async function renderItem(id) {
       </div>` : '';
     return `<div class="list-row contrib">${avatar(m)}
       <div class="grow"><div class="name">${esc(m?.name || '—')} · <b>${money(c.amount)}</b></div>
-        <div class="contrib-meta">${C_STATUS[c.status] || ''} ${receipt}</div>
+        <div class="contrib-meta">${C_STATUS[c.status] || ''} ${receipt}
+          <button type="button" class="link-btn small" data-discuss="${c.id}">💬 Обсудить</button></div>
         ${c.comment ? `<div class="muted small">${esc(c.comment)}</div>` : ''}
         ${c.status === 'rejected' && c.rejectReason ? `<div class="vote-no small">Причина: ${esc(c.rejectReason)}</div>` : ''}
         ${review}</div></div>`;
@@ -734,6 +737,18 @@ async function renderItem(id) {
           <div class="list">${i.contributions.length ? i.contributions.map(contribRow).join('') : '<p class="muted">Пока никто не перевёл — будьте первым!</p>'}</div>
         </div>` : ''}
 
+        <div class="card card-pad section" id="chat">
+          <h3>💬 Обсуждение</h3>
+          <div class="chat-list" id="chatList"></div>
+          <form class="chat-form" id="chatForm">
+            <div id="replyChip"></div>
+            <div class="chat-input">
+              <textarea class="input" name="text" rows="1" maxlength="1000" placeholder="Написать семье…" required></textarea>
+              <button class="btn btn-primary" title="Отправить">➤</button>
+            </div>
+          </form>
+        </div>
+
         <div class="card card-pad section">
           <h3>Голоса семьи</h3>
           <div class="list">${voters.length ? voters.map((m) => {
@@ -744,6 +759,8 @@ async function renderItem(id) {
         </div>
       </div>
     </div>`);
+
+  setupChat(i, opts);
 
   document.querySelectorAll('[data-vote]').forEach((b) => (b.onclick = () => withBusy(b, async () => {
     const r = await api(`/items/${id}/vote`, { method: 'POST', body: { approve: b.dataset.vote === '1' } });
@@ -842,6 +859,121 @@ async function renderItem(id) {
       });
     };
   }
+}
+
+// ---------- обсуждение вещи ----------
+// Время из БД: Postgres отдаёт ISO, SQLite — "YYYY-MM-DD HH:MM:SS" в UTC
+function parseTime(t) {
+  const s = String(t);
+  return new Date(/[zZ]|[+-]\d\d:?\d\d$/.test(s) ? s : s.replace(' ', 'T') + 'Z');
+}
+function chatTime(t) {
+  const d = parseTime(t);
+  const hm = d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  return d.toDateString() === new Date().toDateString() ? hm : d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' }) + ' ' + hm;
+}
+
+function quoteHtml(c) {
+  if (!c) return '';
+  const who = member(c.userId);
+  return `<div class="chat-quote">↪ ${esc(who?.name || '—')} · ${money(c.amount)}${c.status ? ' ' + (C_STATUS[c.status] || '') : ''}</div>`;
+}
+
+function msgHtml(m) {
+  const mine = m.userId === state.me.id;
+  const who = member(m.userId);
+  return `<div class="msg ${mine ? 'mine' : ''}" data-mid="${m.id}">
+    ${mine ? '' : avatar(who, 'sm')}
+    <div class="bubble">
+      ${mine ? '' : `<div class="msg-name">${esc(who?.name || '—')}</div>`}
+      ${quoteHtml(m.contribution)}
+      <div class="msg-text">${esc(m.text)}</div>
+      <div class="msg-meta">${chatTime(m.at)}${mine ? ` · <button type="button" class="link-btn" data-mdel="${m.id}">удалить</button>` : ''}</div>
+    </div></div>`;
+}
+
+function setupChat(item, opts) {
+  clearInterval(state.chatTimer);
+  const list = document.getElementById('chatList');
+  const form = document.getElementById('chatForm');
+  const chip = document.getElementById('replyChip');
+  let lastId = 0;
+  let replyTo = null;
+
+  const nearBottom = () => list.scrollHeight - list.scrollTop - list.clientHeight < 60;
+  const append = (msgs, forceScroll) => {
+    if (!msgs.length) return;
+    const stick = forceScroll || nearBottom();
+    list.querySelector('.chat-empty')?.remove();
+    list.insertAdjacentHTML('beforeend', msgs.map(msgHtml).join(''));
+    lastId = Math.max(lastId, ...msgs.map((m) => m.id));
+    if (stick) list.scrollTop = list.scrollHeight;
+  };
+  list.innerHTML = '<p class="muted chat-empty">Пока тихо. Спросите, уточните, поблагодарите — все увидят и получат уведомление.</p>';
+  append(item.messages, true);
+
+  const poll = async () => {
+    if (document.hidden || !document.body.contains(list)) return;
+    try {
+      append(await api(`/items/${item.id}/messages?after=${lastId}`));
+    } catch {}
+  };
+  state.chatTimer = setInterval(poll, 8000);
+
+  const setReply = (c) => {
+    replyTo = c;
+    chip.innerHTML = c
+      ? `<div class="reply-chip">${quoteHtml({ ...c, status: null })}<button type="button" class="link-btn" id="replyClear">✕</button></div>`
+      : '';
+    if (c) document.getElementById('replyClear').onclick = () => setReply(null);
+  };
+  document.querySelectorAll('[data-discuss]').forEach((b) => (b.onclick = () => {
+    const c = item.contributions.find((x) => x.id === Number(b.dataset.discuss));
+    setReply(c);
+    document.getElementById('chat').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    form.text.focus({ preventScroll: true });
+  }));
+
+  const ta = form.text;
+  ta.oninput = () => {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 140) + 'px';
+  };
+  // Enter — отправить, Shift+Enter — новая строка (на компьютере)
+  ta.onkeydown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !('ontouchstart' in window)) {
+      e.preventDefault();
+      form.requestSubmit();
+    }
+  };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const text = ta.value.trim();
+    if (!text) return;
+    withBusy(form.querySelector('button.btn-primary'), async () => {
+      await api(`/items/${item.id}/messages`, { method: 'POST', body: { text, contributionId: replyTo?.id } });
+      ta.value = '';
+      ta.oninput();
+      setReply(null);
+      append(await api(`/items/${item.id}/messages?after=${lastId}`), true);
+    });
+  };
+
+  list.onclick = (e) => {
+    const del = e.target.closest('[data-mdel]');
+    if (!del) return;
+    if (del.dataset.armed !== '1') {
+      del.dataset.armed = '1';
+      del.textContent = 'точно удалить?';
+      return;
+    }
+    withBusy(del, async () => {
+      await api('/messages/' + del.dataset.mdel, { method: 'DELETE' });
+      list.querySelector(`[data-mid="${del.dataset.mdel}"]`)?.remove();
+    });
+  };
+
+  if (opts.chat) setTimeout(() => document.getElementById('chat')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
 }
 
 // ---------- family & profile ----------
