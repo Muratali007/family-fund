@@ -60,6 +60,21 @@ const SCHEMA = (pg) => {
       text TEXT NOT NULL,
       created_at ${ts}
     )`,
+    `CREATE TABLE IF NOT EXISTS password_resets (
+      token_hash TEXT PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      expires_at TEXT NOT NULL,
+      used INTEGER NOT NULL DEFAULT 0,
+      created_at ${ts}
+    )`,
+    `CREATE TABLE IF NOT EXISTS reminders (
+      kind TEXT NOT NULL,
+      item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      sent_at TEXT NOT NULL,
+      times INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (kind, item_id, user_id)
+    )`,
     `CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
@@ -94,6 +109,20 @@ const COLUMNS = (pg) => [
   ['contributions', 'receipt', 'TEXT'],
   ['contributions', 'reject_reason', 'TEXT'],
   ['contributions', 'reviewed_at', pg ? 'TIMESTAMPTZ' : 'TEXT'],
+  // смена пароля / выход везде увеличивает версию — старые сессии перестают работать
+  ['users', 'session_version', 'INTEGER NOT NULL DEFAULT 0'],
+  ['users', 'lang', "TEXT NOT NULL DEFAULT 'ru'"],
+  ['families', 'owner_id', 'INTEGER'],
+  ['items', 'deadline', 'TEXT'], // YYYY-MM-DD
+  ['items', 'bought_at', 'TEXT'], // ISO-время
+  ['items', 'bought_proof', 'TEXT'],
+  ['items', 'bought_note', 'TEXT'],
+];
+
+// Данные, которые надо дозаполнить после добавления колонок
+const BACKFILL = [
+  // главой семьи считаем того, кто её создал (первый участник)
+  'UPDATE families SET owner_id = (SELECT MIN(u.id) FROM users u WHERE u.family_id = families.id) WHERE owner_id IS NULL',
 ];
 
 let impl;
@@ -122,6 +151,7 @@ if (usePg) {
       try {
         for (const s of SCHEMA(true)) await direct.query(s);
         for (const [t, c, type] of COLUMNS(true)) await direct.query(`ALTER TABLE ${t} ADD COLUMN IF NOT EXISTS ${c} ${type}`);
+        for (const q of BACKFILL) await direct.query(q);
       } finally {
         await direct.end();
       }
@@ -150,6 +180,7 @@ if (usePg) {
         const has = db.prepare(`PRAGMA table_info(${t})`).all().some((r) => r.name === c);
         if (!has) db.exec(`ALTER TABLE ${t} ADD COLUMN ${c} ${type}`);
       }
+      for (const q of BACKFILL) db.exec(q);
     },
     async all(sql, params = []) {
       return db.prepare(sql).all(...params);
